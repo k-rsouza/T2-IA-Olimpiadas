@@ -111,17 +111,18 @@ PARAMS_FINAL = dict(t0=100.0, alfa=0.95, t_min=0.01, iter_temp=30)
 #   nao encontrar o otimo. O modo final usa os parametros completos.
 PARAMS_PASSO = dict(t0=100.0, alfa=0.90, t_min=0.10, iter_temp=1)
 
-# Criterio de parada por estagnacao (modo final apenas):
-#   Se PACIENCIA iteracoes consecutivas nao melhorarem o melhor custo, encerra
-#   antes de atingir T_min. Para o modo final (~5370 iter max), PACIENCIA=300
-#   representa ~5.6% do total — conservador o suficiente para nao parar durante
-#   a fase de exploracao (T alto), mas evita iteracoes vazias apos convergencia.
-PACIENCIA = 300
+# Criterio de convergencia por homogeneidade (modo final apenas):
+#   Observa as ultimas JANELA iteracoes e calcula que percentual delas chegou
+#   ao mesmo custo que o melhor ja encontrado. Quando >= LIMIAR_HOMOGENEIDADE,
+#   o algoritmo esta circulando em torno do mesmo minimo sem sair -> convergiu.
+#   Vantagem sobre estagnacao pura: e um criterio relativo (%), nao absoluto,
+#   entao se adapta ao comportamento real do algoritmo independente de N.
+JANELA              = 100   # tamanho da janela de observacao (ultimas N iteracoes)
+LIMIAR_HOMOGENEIDADE = 0.90  # 90% das respostas iguais ao melhor custo -> para
 
 
 def simulated_annealing(n, rank_a, rank_b, modo_passo):
     p = PARAMS_PASSO if modo_passo else PARAMS_FINAL
-    paciencia = 0 if modo_passo else PACIENCIA   # estagnacao desativada no modo passo
 
     sol = list(range(1, n + 1))
     random.shuffle(sol)                       # solucao inicial aleatoria (permutacao valida)
@@ -131,9 +132,10 @@ def simulated_annealing(n, rank_a, rank_b, modo_passo):
 
     temperatura = p["t0"]
     iteracao = 0
-    sem_melhora = 0
+    custos_recentes = []   # janela deslizante para o criterio de homogeneidade
+    convergiu = False
 
-    while temperatura > p["t_min"] and (paciencia == 0 or sem_melhora < paciencia):
+    while temperatura > p["t_min"] and not convergiu:
         for _ in range(p["iter_temp"]):
             iteracao += 1
 
@@ -148,14 +150,22 @@ def simulated_annealing(n, rank_a, rank_b, modo_passo):
                 custo_atual = novo_custo
                 if custo_atual < melhor_custo:
                     melhor_sol, melhor_custo = sol[:], custo_atual
-                    sem_melhora = 0          # melhora encontrada: zera a contagem
-                else:
-                    sem_melhora += 1
             else:
                 sol[i], sol[j] = sol[j], sol[i]   # rejeita: desfaz a troca
-                sem_melhora += 1
 
             historico.append((custo_atual, melhor_custo))
+
+            # Criterio de homogeneidade: janela deslizante das ultimas JANELA iteracoes.
+            # Se >= LIMIAR das respostas recentes igualam o melhor custo, convergiu.
+            if not modo_passo:
+                custos_recentes.append(custo_atual)
+                if len(custos_recentes) > JANELA:
+                    custos_recentes.pop(0)
+                if len(custos_recentes) == JANELA:
+                    pct = custos_recentes.count(melhor_custo) / JANELA
+                    if pct >= LIMIAR_HOMOGENEIDADE:
+                        convergiu = True
+                        break   # sai do for interno; o while checa convergiu e encerra
 
             if modo_passo:
                 print(f"  iter {iteracao:4d} | T={temperatura:7.3f} | "
@@ -164,9 +174,10 @@ def simulated_annealing(n, rank_a, rank_b, modo_passo):
 
         temperatura *= p["alfa"]               # resfriamento
 
-    if paciencia > 0 and sem_melhora >= paciencia:
-        print(f"  [encerrado por estagnacao: {paciencia} iteracoes sem melhora "
-              f"| iteracao {iteracao} de ~5370 max]")
+    if convergiu:
+        pct_final = custos_recentes.count(melhor_custo) / JANELA
+        print(f"  [convergencia por homogeneidade: {pct_final*100:.0f}% das ultimas "
+              f"{JANELA} iteracoes com custo = {melhor_custo} | iteracao {iteracao}]")
 
     return melhor_sol, melhor_custo, historico
 
